@@ -103,7 +103,7 @@ jobs:
           ditto "$APP" apps/ios.app
           EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' apps/ios.app/Info.plist)
           file "apps/ios.app/$EXEC" | tee -a ios-environment.log
-          lipo -verify_arch "$(uname -m)" "apps/ios.app/$EXEC"
+          lipo "apps/ios.app/$EXEC" -verify_arch "$(uname -m)"
           xcrun simctl install "$DEVICE_UDID" "$PWD/apps/ios.app"
 
       - name: Executar testes Mobile iOS
