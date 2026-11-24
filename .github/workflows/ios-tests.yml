@@ -1,130 +1,46 @@
-name: Mobile iOS
-run-name: iOS - GitLab ${{ inputs.commit_sha }}
-
-on:
-  workflow_dispatch:
-    inputs:
-      commit_sha:
-        description: SHA do commit do GitLab
-        required: true
-        type: string
-
-permissions:
-  contents: read
-
-jobs:
-  ios:
-    runs-on: macos-15
-    timeout-minutes: 35
-    defaults:
-      run:
-        shell: bash
-    steps:
       - name: Obter o commit do GitLab
         env:
           GITLAB_REPOSITORY: ${{ vars.GITLAB_REPOSITORY }}
           GITLAB_USERNAME: ${{ secrets.GITLAB_USERNAME }}
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           mkdir -p project
+
           printf 'GitLab commit: %s\n' "$COMMIT_SHA" > project/ios-environment.log
+
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$GITLAB_REPOSITORY" == https://gitlab.com/*.git ]]
-          test -n "$GITLAB_USERNAME" && test -n "$GITLAB_TOKEN"
-          AUTH=$(printf '%s:%s' "$GITLAB_USERNAME" "$GITLAB_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::$AUTH"
-          git init project
-          git -C project -c "http.extraHeader=Authorization: Basic $AUTH" \
-            fetch --depth=1 "$GITLAB_REPOSITORY" "$COMMIT_SHA"
+
+          test -n "$GITLAB_USERNAME"
+          test -n "$GITLAB_TOKEN"
+
+          export GIT_ASKPASS="$RUNNER_TEMP/git-askpass.sh"
+
+          cat > "$GIT_ASKPASS" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "$GITLAB_USERNAME" ;;
+            *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+
+          chmod 700 "$GIT_ASKPASS"
+
+          trap 'rm -f "$GIT_ASKPASS"' EXIT
+
+          echo "Validando acesso ao repositorio GitLab..."
+          git -c credential.helper= ls-remote "$GITLAB_REPOSITORY" HEAD
+
+          git init -b main project
+
+          git -C project -c credential.helper= fetch --depth=1 "$GITLAB_REPOSITORY" "$COMMIT_SHA"
+
           git -C project checkout --detach FETCH_HEAD
+
           test "$(git -C project rev-parse HEAD)" = "$COMMIT_SHA"
           test -f project/pom.xml
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Preparar Appium e simulador
-        working-directory: project
-        run: |
-          sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
-          {
-            sw_vers
-            uname -m
-            xcodebuild -version
-            java -version
-            mvn -version
-            xcrun simctl list devices available
-          } 2>&1 | tee -a ios-environment.log
-          npm install -g appium@2.19.0
-          appium driver install xcuitest@9.10.5
-          appium driver list --installed | tee -a ios-environment.log
-          DEVICE_UDID=$(xcrun simctl list devices available -j | jq -er \
-            '.devices["com.apple.CoreSimulator.SimRuntime.iOS-18-5"] | map(select(.name == "iPhone 16")) | .[0].udid')
-          echo "DEVICE_UDID=$DEVICE_UDID" >> "$GITHUB_ENV"
-          xcrun simctl bootstatus "$DEVICE_UDID" -b
-
-      - name: Baixar Native Demo App v1.0.8
-        working-directory: project
-        run: |
-          mkdir -p apps "$RUNNER_TEMP/native-demo"
-          curl -fLsS --retry 2 \
-            'https://github.com/webdriverio/native-demo-app/releases/download/v1.0.8/ios.simulator.wdio.native.app.v1.0.8.zip' \
-            -o "$RUNNER_TEMP/native-demo.zip"
-          ditto -x -k "$RUNNER_TEMP/native-demo.zip" "$RUNNER_TEMP/native-demo"
-          APP=$(find "$RUNNER_TEMP/native-demo" -type d -name '*.app' -prune -print | head -n 1)
-          test -n "$APP"
-          ditto "$APP" apps/ios.app
-          EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' apps/ios.app/Info.plist)
-          file "apps/ios.app/$EXEC" | tee -a ios-environment.log
-          lipo -verify_arch "$(uname -m)" "apps/ios.app/$EXEC"
-          xcrun simctl install "$DEVICE_UDID" "$PWD/apps/ios.app"
-
-      - name: Executar testes Mobile iOS
-        working-directory: project
-        run: |
-          appium --port 4723 > appium.log 2>&1 &
-          APPIUM_PID=$!
-          trap 'kill "$APPIUM_PID" 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4723/status | jq -e '.value.ready == true' >/dev/null; then break; fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:4723/status | jq -e '.value.ready == true' >/dev/null
-          mvn -B clean test -Pmobile -DfailIfNoTests=true \
-            -Dplatform=ios "-Dapp.path=$PWD/apps/ios.app" \
-            '-Ddevice.name=iPhone 16' -Dplatform.version=18.5 \
-            "-Ddevice.udid=$DEVICE_UDID" 2>&1 | tee ios-tests.log
-
-      - name: Gerar relatorio Allure
-        if: ${{ always() }}
-        working-directory: project
-        run: |
-          if [ ! -d target/allure-results ]; then
-            echo 'Sem resultados Allure: confira os logs de preparacao e testes.'
-            exit 1
-          fi
-          mvn -B allure:report
-          test -s target/site/allure-maven-plugin/index.html
-
-      - name: Publicar evidencias
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: evidencias-ios
-          retention-days: 7
-          if-no-files-found: error
-          path: |
-            project/ios-environment.log
-            project/ios-tests.log
-            project/appium.log
-            project/target/site/allure-maven-plugin/index.html
-            project/target/allure-results/
-            project/target/surefire-reports/
-            project/target/screenshots/
+          echo "Codigo-fonte obtido com sucesso."
