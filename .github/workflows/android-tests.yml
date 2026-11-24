@@ -122,10 +122,38 @@ jobs:
             adb -s "$DEVICE_UDID" shell getprop ro.product.cpu.abi
             adb -s "$DEVICE_UDID" shell getprop persist.sys.locale
           } 2>&1 | tee -a android-environment.log
+          # Aguardar os servicos do sistema, nao apenas sys.boot_completed.
+          APPIUM_PID=""
+          collect_diagnostics() {
+            {
+              echo '--- Android: diagnostico ao finalizar ---'
+              timeout 20s adb -s "$DEVICE_UDID" shell dumpsys activity lastanr || true
+              timeout 20s adb -s "$DEVICE_UDID" logcat -d -b events -s 'am_anr:I' '*:S' || true
+              timeout 20s adb -s "$DEVICE_UDID" logcat -d -b crash || true
+              timeout 15s adb -s "$DEVICE_UDID" shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' || true
+            } >> android-environment.log 2>&1
+            if [ -n "$APPIUM_PID" ]; then kill "$APPIUM_PID" 2>/dev/null || true; fi
+          }
+          trap collect_diagnostics EXIT
+          timeout 60s adb -s "$DEVICE_UDID" wait-for-device
+          for i in $(seq 1 30); do
+            if adb -s "$DEVICE_UDID" shell pm path android | grep -q '^package:'; then break; fi
+            sleep 2
+          done
+          adb -s "$DEVICE_UDID" shell pm path android | grep -q '^package:'
           adb -s "$DEVICE_UDID" shell input keyevent 82
+          # Dar tempo para o System UI se estabilizar apos um cold boot.
+          sleep 30
+          {
+            free -h
+            nproc
+            adb -s "$DEVICE_UDID" shell wm size
+            adb -s "$DEVICE_UDID" shell wm density
+            adb -s "$DEVICE_UDID" shell cat /proc/meminfo | head -n 5
+            adb -s "$DEVICE_UDID" shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' || true
+          } 2>&1 | tee -a android-environment.log
           appium --port 4723 > appium.log 2>&1 &
           APPIUM_PID=$!
-          trap 'kill "$APPIUM_PID" 2>/dev/null || true' EXIT
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:4723/status | jq -e '.value.ready == true' >/dev/null; then break; fi
             sleep 2
@@ -144,12 +172,12 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
-          profile: pixel_7_pro
+          profile: pixel_2
           cores: 2
-          ram-size: 2048M
+          ram-size: 3072M
           disk-size: 4096M
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader -feature -Vulkan -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           disable-spellchecker: true
           script: bash "$RUNNER_TEMP/run-android-tests.sh"
