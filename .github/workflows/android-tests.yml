@@ -20,6 +20,14 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Liberar espaco em disco no runner
+        run: |
+          echo 'Espaco antes da limpeza:'
+          df -h "$HOME"
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          echo 'Espaco depois da limpeza:'
+          df -h "$HOME"
+
       - name: Obter o commit do GitLab
         env:
           GITLAB_REPOSITORY: ${{ vars.GITLAB_REPOSITORY }}
@@ -141,7 +149,6 @@ jobs:
           ram-size: 2048M
           disk-size: 4096M
           emulator-boot-timeout: 600
-          disable-linux-hw-accel: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           disable-spellchecker: true
