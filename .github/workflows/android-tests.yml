@@ -1,0 +1,173 @@
+name: Mobile Android
+run-name: Android - GitLab ${{ inputs.commit_sha }}
+
+"on":
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: SHA do commit do GitLab
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Obter o commit do GitLab
+        env:
+          GITLAB_REPOSITORY: ${{ vars.GITLAB_REPOSITORY }}
+          GITLAB_USERNAME: ${{ secrets.GITLAB_USERNAME }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GIT_TERMINAL_PROMPT: "0"
+          LC_ALL: C
+        run: |
+          mkdir -p project
+          printf 'GitLab commit: %s\n' "$COMMIT_SHA" > project/android-environment.log
+
+          : "${GITLAB_REPOSITORY:?Configure a variable GITLAB_REPOSITORY}"
+          : "${GITLAB_USERNAME:?Configure o secret GITLAB_USERNAME}"
+          : "${GITLAB_TOKEN:?Configure o secret GITLAB_TOKEN}"
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'SHA invalido'; exit 1; }
+          [[ "$GITLAB_REPOSITORY" =~ ^https://gitlab\.com/([A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.git$ ]] || { echo 'URL HTTPS GitLab invalida'; exit 1; }
+
+          export GIT_ASKPASS="$RUNNER_TEMP/git-askpass.sh"
+          umask 077
+          cat > "$GIT_ASKPASS" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "$GITLAB_USERNAME" ;;
+            *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$GIT_ASKPASS"
+          trap 'rm -f "$GIT_ASKPASS"' EXIT
+          umask 022
+
+          echo 'Validando acesso ao GitLab...'
+          git -c credential.helper= ls-remote "$GITLAB_REPOSITORY" HEAD
+          git init -b main project
+          git -C project -c credential.helper= fetch --depth=1 "$GITLAB_REPOSITORY" "$COMMIT_SHA"
+          git -C project checkout --detach FETCH_HEAD
+          test "$(git -C project rev-parse HEAD)" = "$COMMIT_SHA"
+          test -f project/pom.xml
+          echo 'Codigo-fonte obtido com sucesso.'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Habilitar aceleracao KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Preparar Appium
+        working-directory: project
+        run: |
+          {
+            uname -a
+            java -version
+            mvn -version
+            node --version
+            echo "ANDROID_HOME=$ANDROID_HOME"
+          } 2>&1 | tee -a android-environment.log
+          npm install -g appium@2.19.0
+          appium driver install uiautomator2@4.2.9
+          appium driver list --installed | tee -a android-environment.log
+
+      - name: Baixar Native Demo App v1.0.8
+        working-directory: project
+        run: |
+          mkdir -p apps
+          curl -fLsS --retry 2 \
+            'https://github.com/webdriverio/native-demo-app/releases/download/v1.0.8/android.wdio.native.app.v1.0.8.apk' \
+            -o apps/android.apk
+          unzip -tq apps/android.apk
+
+      - name: Preparar script de testes
+        run: |
+          cat > "$RUNNER_TEMP/run-android-tests.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/project"
+          DEVICE_UDID="emulator-${EMULATOR_PORT:-5554}"
+          {
+            adb devices -l
+            adb -s "$DEVICE_UDID" shell getprop ro.build.version.release
+            adb -s "$DEVICE_UDID" shell getprop ro.build.version.sdk
+            adb -s "$DEVICE_UDID" shell getprop ro.product.cpu.abi
+            adb -s "$DEVICE_UDID" shell getprop persist.sys.locale
+          } 2>&1 | tee -a android-environment.log
+          adb -s "$DEVICE_UDID" shell input keyevent 82
+          appium --port 4723 > appium.log 2>&1 &
+          APPIUM_PID=$!
+          trap 'kill "$APPIUM_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4723/status | jq -e '.value.ready == true' >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:4723/status | jq -e '.value.ready == true' >/dev/null
+          mvn -B clean test -Pmobile -DfailIfNoTests=true \
+            -Dplatform=android "-Dapp.path=$PWD/apps/android.apk" \
+            '-Ddevice.name=Android Emulator' -Dplatform.version=14 \
+            "-Ddevice.udid=$DEVICE_UDID" 2>&1 | tee android-tests.log
+          EOF
+
+      - name: Executar testes Mobile Android
+        id: mobile_tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7_pro
+          cores: 2
+          ram-size: 2048M
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          disable-spellchecker: true
+          script: bash "$RUNNER_TEMP/run-android-tests.sh"
+
+      - name: Gerar relatorio Allure
+        if: ${{ always() && steps.mobile_tests.outcome != 'skipped' && steps.mobile_tests.outcome != '' }}
+        working-directory: project
+        run: |
+          if [ ! -d target/allure-results ]; then
+            echo 'Sem resultados Allure: confira os logs de preparacao e testes.'
+            exit 1
+          fi
+          mvn -B allure:report
+          test -s target/site/allure-maven-plugin/index.html
+
+      - name: Publicar evidencias
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencias-android
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            project/android-environment.log
+            project/android-tests.log
+            project/appium.log
+            project/target/site/allure-maven-plugin/index.html
+            project/target/allure-results/
+            project/target/surefire-reports/
+            project/target/screenshots/
