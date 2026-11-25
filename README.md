@@ -92,14 +92,14 @@ O disparo manual direto no GitHub não cria um job no GitLab nem transfere autom
 
 ## 6. Evidências e resultados validados
 
-Execução de referência: [GitLab Pipeline 3110422102](https://gitlab.com/ckenans/desafio-automacao-qa/-/pipelines/3110422102), de 24/11/2026.
+Execução de referência: [GitLab Pipeline 3114252884](https://gitlab.com/ckenans/desafio-automacao-qa/-/pipelines/3114252884), de 25/11/2026.
 
 | Plataforma | Execução GitHub | Testes | Screenshots |
 |---|---|---:|---:|
-| Android 11 | [Run 45475152066](https://github.com/ckenans/verity-qa-ios/actions/runs/45475152066) | 10/10 aprovados | 64 |
-| iOS 18.5 | [Run 45475154664](https://github.com/ckenans/verity-qa-ios/actions/runs/45475154664) | 10/10 aprovados | 69 |
+| Android 11 | [Run 45636771051](https://github.com/ckenans/verity-qa-ios/actions/runs/45636771051) | 10/10 aprovados | 64 |
+| iOS 18.5 | [Run 45636773641](https://github.com/ckenans/verity-qa-ios/actions/runs/45636773641) | 10/10 aprovados | 69 |
 
-Ambas as execuções utilizaram o commit GitLab `352e43460ca1daf173a3740898da260e392e0afc` e retornaram `success`.
+Ambas as execuções utilizaram o commit GitLab `311f2cc41cc5e18ba1d41b1efc17b961149e6796` e retornaram `success`, sem falhas, erros ou testes ignorados. Foram gerados 113 screenshots por passo e 20 screenshots finais (133 no total). A execução Android não apresentou registros de ANR desde o boot, conforme `android-environment.log`.
 
 Os workflows publicam `evidencias-android` e `evidencias-ios`, contendo os arquivos disponíveis:
 
